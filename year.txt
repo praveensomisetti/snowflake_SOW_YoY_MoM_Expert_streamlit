@@ -1,0 +1,74 @@
+WITH cnt1 AS (
+  SELECT DISTINCT
+    freelancer_id,
+    YEAR(APPROVED_ACCEPTED) AS approved_year,
+    APPROVED_ACCEPTED
+  FROM
+    PROD_DWH.DWH.DIM_FREELANCER_MASTER_SUMMARY
+  WHERE
+    APPROVED_ACCEPTED IS NOT NULL
+    AND (
+      (YEAR(APPROVED_ACCEPTED) = 2023 AND APPROVED_ACCEPTED <= DATEADD(YEAR, -1, CAST(GETDATE() AS DATE)))
+      OR
+      (YEAR(APPROVED_ACCEPTED) = 2024 AND APPROVED_ACCEPTED <= CAST(GETDATE() AS DATE))
+    )
+),
+cnt2 AS (
+  SELECT DISTINCT
+    freelancer_id,
+    SOW_SIGNED
+  FROM
+    PROD_DWH.DWH.FCT_MATCHMAKING_FUNNEL
+  WHERE
+    SOW_SIGNED IS NOT NULL
+),
+joined_data AS (
+  SELECT
+    cnt1.freelancer_id,
+    cnt1.approved_year,
+    cnt1.APPROVED_ACCEPTED,
+    cnt2.SOW_SIGNED,
+    DATEDIFF(day, cnt1.APPROVED_ACCEPTED, cnt2.SOW_SIGNED) AS days_to_sow_signed
+  FROM
+    cnt1
+    LEFT JOIN cnt2 ON cnt1.freelancer_id = cnt2.freelancer_id
+    AND cnt2.SOW_SIGNED IS NOT NULL -- Ensure SOW_SIGNED is not null for valid entries
+    AND DATEDIFF(day, cnt1.APPROVED_ACCEPTED, cnt2.SOW_SIGNED) >= 0 -- Ensure days_to_sow_signed is non-negative
+),
+min_sow_signed_per_year AS (
+  SELECT
+    freelancer_id,
+    approved_year,
+    MIN(SOW_SIGNED) AS first_sow_signed
+  FROM
+    joined_data
+  WHERE
+    SOW_SIGNED IS NOT NULL
+  GROUP BY
+    freelancer_id, approved_year
+),
+filtered_data AS (
+  SELECT
+    ms.freelancer_id,
+    ms.approved_year,
+    jd.SOW_SIGNED,
+    jd.days_to_sow_signed
+  FROM
+    min_sow_signed_per_year ms
+    JOIN joined_data jd ON ms.freelancer_id = jd.freelancer_id
+    AND ms.approved_year = jd.approved_year
+    AND ms.first_sow_signed = jd.SOW_SIGNED
+)
+SELECT
+  cnt1.approved_year,
+  COUNT(DISTINCT cnt1.freelancer_id) AS Approved_Accepted_Experts,
+  COUNT(DISTINCT CASE WHEN fd.SOW_SIGNED IS NOT NULL THEN fd.freelancer_id END) AS SOW_Won_Experts,
+  COUNT(DISTINCT CASE WHEN fd.days_to_sow_signed <= 30 THEN fd.freelancer_id END) AS sow_signed_within_30_days,
+  AVG(fd.days_to_sow_signed) AS avg_days_to_first_sow_signed
+FROM
+  cnt1
+  LEFT JOIN filtered_data fd ON cnt1.freelancer_id = fd.freelancer_id
+GROUP BY
+  cnt1.approved_year
+ORDER BY
+  cnt1.approved_year;
